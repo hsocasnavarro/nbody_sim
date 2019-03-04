@@ -6,7 +6,7 @@
 !  Real (kind=8), Parameter :: G_grav=1.0, cc=2.99792458d8
   Integer :: NN
   Real (kind=8), Dimension(:), Allocatable :: m, record
-  Real (kind=8), Dimension(:,:), Allocatable :: x, v
+  Real (kind=8), Dimension(:,:), Allocatable :: x, v, v_0
   Real (kind=8), Dimension(:,:), Allocatable :: x_slice, v_slice, a_slice
   Real (kind=8) :: eps, eps2, dt=1e6*365.25*24.*3600 ! Myr in sec
   Real (kind=8) :: Norm_x=1e9*365.25*24.*3600.*cc
@@ -63,7 +63,7 @@
      Print *,'Input file read. Particles:',NN,' Frames:',nt
      !
      Geff=G_grav*Norm_t/Norm_x*Norm_t/Norm_x*Norm_m/Norm_x ! Gravity in normalized units
-     Allocate (x(NN,3), v(NN,3), m(NN))
+     Allocate (x(NN,3), v(NN,3), m(NN), v_0(NN,3))
      !
      ! Simulation starting conditions (read from file)
      !
@@ -115,6 +115,8 @@
      m=m/Norm_m 
      eps=eps/Norm_x 
      CubeSize(:)=CubeSize(:)/Norm_x
+     ! Remember initial velocity (will need it for leapfrog kick)
+     v_0(:,:)=v(:,:)
      ! Pack parameters to transfer to slaves
      Param_vector(1)=NN
      Param_vector(4)=dt
@@ -126,8 +128,6 @@
      !
      iframe=1
      Do it=1, nt
-        ! Update positions first
-        x(:,:)=x(:,:)+v(:,:)*dt
         Do islave=1, nslaves ! Send job to slaves
            If (i0(islave) .le. NN) then ! If this slave is active
               Param_vector(2)=i0(islave)
@@ -153,6 +153,14 @@
               v(i0(islave):i1(islave),:)=v_slice(1:i1(islave)-i0(islave)+1,:)
            End if
         End do
+        ! If this is the first iteration, give initial "kick" to velocity
+        ! to make it v_1/2=v_0+a(x_0)*dt/2 and don't update positions
+        If (it .eq. 1) then
+           v(:,:)=v_0(:,:)+(v(:,:)-v_0(:,:))/2.
+        Else
+        ! Update positions
+           x(:,:)=x(:,:)+v(:,:)*dt
+        End if
         ! Write to file (convert back to physical units)
         If (MODULO(it,iframeskip) .eq. 0) then
            ii=1
@@ -218,7 +226,7 @@
            Stop
         End if
         
-        ! Return updated x and v
+        ! Return updated v and x (but x is only updated if it hits boundaries)
         Call MPI_Send(x_slice, nperproc*3, My_MPI_REAL, 0, 7, MPI_COMM_WORLD, ierr)
         Call MPI_Send(v_slice, nperproc*3, My_MPI_REAL, 0, 8, MPI_COMM_WORLD, ierr)
         !
